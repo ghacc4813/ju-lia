@@ -21,6 +21,9 @@ mutable struct InferenceState
     stmt_types::Vector{Union{Nothing, Vector{Any}}} # ::Vector{Union{Nothing, VarTable}}
     stmt_edges::Vector{Union{Nothing, Vector{Any}}}
     stmt_info::Vector{Any}
+    # additional state updates at current statement made by means other than the assignment
+    # e.g. type information refinement from `typeassert` call itself
+    curr_stmt_changes::Vector{Tuple{SlotNumber,Any}}
     # return type
     bestguess #::Type
     # current active instruction pointers
@@ -101,7 +104,7 @@ mutable struct InferenceState
             sp, slottypes, mod, 0,
             IdSet{InferenceState}(), IdSet{InferenceState}(),
             src, get_world_counter(interp), valid_worlds,
-            nargs, s_types, s_edges, stmt_info,
+            nargs, s_types, s_edges, stmt_info, Tuple{SlotNumber,Any}[],
             Union{}, ip, 1, n, handler_at,
             ssavalue_uses,
             Vector{Tuple{InferenceState,LineNum}}(), # cycle_backedges
