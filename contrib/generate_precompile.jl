@@ -70,6 +70,7 @@ repl_script = """
 2+2
 print("")
 printstyled("a", "b")
+display(["a"])
 display([1])
 display([1 2; 3 4])
 foo(x) = 1
