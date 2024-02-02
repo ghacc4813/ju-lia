@@ -818,3 +818,11 @@ namedtup = (;a=1, b=2, c=3)
     @test (1, "2") == @inferred Tuple(pair)
     @test (1, "2") == @inferred Tuple{Int,String}(pair)
 end
+
+@testset "isassigned" begin
+    t = (1, 2, 3)
+    @test isassigned(t, 0) === false
+    @test isassigned(t, 1) === true
+    @test isassigned(t, 3) === true
+    @test isassigned(t, 4) === false
+end
