@@ -74,6 +74,7 @@ Build system changes
 
 New library functions
 ---------------------
+* `findextrema(f, itr; [dims])` which computes `findmin(f, itr; [dims]), findmax(f, itr; [dims])` in a single pass. ([#45783])
 
 * `in!(x, s::AbstractSet)` will return whether `x` is in `s`, and insert `x` in `s` if not.
 * The new `Libc.mkfifo` function wraps the `mkfifo` C function on Unix platforms ([#34587]).
