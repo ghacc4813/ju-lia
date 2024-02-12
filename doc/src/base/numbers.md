@@ -75,8 +75,6 @@ Base.Irrational
 Base.digits
 Base.digits!
 Base.bitstring
-Base.parse
-Base.tryparse
 Base.big
 Base.signed
 Base.unsigned
