@@ -422,6 +422,7 @@ export
     minmax,
     ndims,
     ones,
+    ones!,
     parent,
     parentindices,
     partialsort,
@@ -461,6 +462,7 @@ export
     view,
     wrap,
     zeros,
+    zeros!,
 
 # search, find, match and related functions
     contains,
