@@ -104,6 +104,8 @@ static void jl_encode_as_indexed_root(jl_ircode_state *s, jl_value_t *v)
 {
     rle_reference rr;
 
+    if (jl_is_string(v))
+        v = jl_as_global_root(v, 1);
     literal_val_id(&rr, s, v);
     int id = rr.index;
     assert(id >= 0);
@@ -155,7 +157,7 @@ static void jl_encode_memory_slice(jl_ircode_state *s, jl_genericmemory_t *mem, 
     }
     else {
         ios_write(s->s, (char*)mem->ptr + offset * layout->size, len * layout->size);
-        if (jl_genericmemory_isbitsunion(mem))
+        if (layout->flags.arrayelem_isunion)
             ios_write(s->s, jl_genericmemory_typetagdata(mem) + offset, len);
     }
 }
@@ -320,6 +322,11 @@ static void jl_encode_value_(jl_ircode_state *s, jl_value_t *v, int as_literal) 
         jl_encode_value(s, jl_get_nth_field(v, 0));
         jl_encode_value(s, jl_get_nth_field(v, 1));
     }
+    else if (jl_is_enternode(v)) {
+        write_uint8(s->s, TAG_ENTERNODE);
+        jl_encode_value(s, jl_get_nth_field(v, 0));
+        jl_encode_value(s, jl_get_nth_field(v, 1));
+    }
     else if (jl_is_argument(v)) {
         write_uint8(s->s, TAG_ARGUMENT);
         jl_encode_value(s, jl_get_nth_field(v, 0));
@@ -392,7 +399,7 @@ static void jl_encode_value_(jl_ircode_state *s, jl_value_t *v, int as_literal) 
         if (layout->flags.arrayelem_isunion || layout->size == 0)
             offset = (uintptr_t)ar->ref.ptr_or_offset;
         else
-            offset = (char*)ar->ref.ptr_or_offset - (char*)ar->ref.mem->ptr;
+            offset = ((char*)ar->ref.ptr_or_offset - (char*)ar->ref.mem->ptr) / layout->size;
         jl_encode_memory_slice(s, ar->ref.mem, offset, l);
     }
     else if (as_literal && jl_is_genericmemory(v)) {
@@ -455,11 +462,10 @@ static void jl_encode_value_(jl_ircode_state *s, jl_value_t *v, int as_literal) 
     }
 }
 
-static jl_code_info_flags_t code_info_flags(uint8_t inferred, uint8_t propagate_inbounds, uint8_t has_fcall,
+static jl_code_info_flags_t code_info_flags(uint8_t propagate_inbounds, uint8_t has_fcall,
                                             uint8_t nospecializeinfer, uint8_t inlining, uint8_t constprop)
 {
     jl_code_info_flags_t flags;
-    flags.bits.inferred = inferred;
     flags.bits.propagate_inbounds = propagate_inbounds;
     flags.bits.has_fcall = has_fcall;
     flags.bits.nospecializeinfer = nospecializeinfer;
@@ -720,6 +726,11 @@ static jl_value_t *jl_decode_value(jl_ircode_state *s) JL_GC_DISABLED
         set_nth_field(jl_gotoifnot_type, v, 0, jl_decode_value(s), 0);
         set_nth_field(jl_gotoifnot_type, v, 1, jl_decode_value(s), 0);
         return v;
+    case TAG_ENTERNODE:
+        v = jl_new_struct_uninit(jl_enternode_type);
+        set_nth_field(jl_enternode_type, v, 0, jl_decode_value(s), 0);
+        set_nth_field(jl_enternode_type, v, 1, jl_decode_value(s), 0);
+        return v;
     case TAG_ARGUMENT:
         v = jl_new_struct_uninit(jl_argument_type);
         set_nth_field(jl_argument_type, v, 0, jl_decode_value(s), 0);
@@ -822,7 +833,7 @@ JL_DLLEXPORT jl_string_t *jl_compress_ir(jl_method_t *m, jl_code_info_t *code)
         1
     };
 
-    jl_code_info_flags_t flags = code_info_flags(code->inferred, code->propagate_inbounds, code->has_fcall,
+    jl_code_info_flags_t flags = code_info_flags(code->propagate_inbounds, code->has_fcall,
                                                  code->nospecializeinfer, code->inlining, code->constprop);
     write_uint8(s.s, flags.packed);
     static_assert(sizeof(flags.packed) == IR_DATASIZE_FLAGS, "ir_datasize_flags is mismatched with the actual size");
@@ -841,15 +852,11 @@ JL_DLLEXPORT jl_string_t *jl_compress_ir(jl_method_t *m, jl_code_info_t *code)
     // by the various jl_ir_ accessors. Make sure to adjust those if you change
     // the data layout.
 
-    for (i = 0; i < 6; i++) {
+    for (i = 0; i < 5; i++) {
         int copy = 1;
         if (i == 1) { // skip codelocs
             assert(jl_field_offset(jl_code_info_type, i) == offsetof(jl_code_info_t, codelocs));
             continue;
-        }
-        if (i == 4) { // don't copy contents of method_for_inference_limit_heuristics field
-            assert(jl_field_offset(jl_code_info_type, i) == offsetof(jl_code_info_t, method_for_inference_limit_heuristics));
-            copy = 0;
         }
         jl_encode_value_(&s, jl_get_nth_field((jl_value_t*)code, i), copy);
     }
@@ -923,7 +930,6 @@ JL_DLLEXPORT jl_code_info_t *jl_uncompress_ir(jl_method_t *m, jl_code_instance_t
     flags.packed = read_uint8(s.s);
     code->inlining = flags.bits.inlining;
     code->constprop = flags.bits.constprop;
-    code->inferred = flags.bits.inferred;
     code->propagate_inbounds = flags.bits.propagate_inbounds;
     code->has_fcall = flags.bits.has_fcall;
     code->nospecializeinfer = flags.bits.nospecializeinfer;
@@ -934,7 +940,7 @@ JL_DLLEXPORT jl_code_info_t *jl_uncompress_ir(jl_method_t *m, jl_code_instance_t
     code->slotflags = jl_alloc_array_1d(jl_array_uint8_type, nslots);
     ios_readall(s.s, jl_array_data(code->slotflags, char), nslots);
 
-    for (i = 0; i < 6; i++) {
+    for (i = 0; i < 5; i++) {
         if (i == 1)  // skip codelocs
             continue;
         assert(jl_field_isptr(jl_code_info_type, i));
@@ -974,23 +980,10 @@ JL_DLLEXPORT jl_code_info_t *jl_uncompress_ir(jl_method_t *m, jl_code_instance_t
     JL_UNLOCK(&m->writelock); // Might GC
     JL_GC_POP();
     if (metadata) {
-        code->min_world = metadata->min_world;
-        code->max_world = metadata->max_world;
-        code->rettype = metadata->rettype;
         code->parent = metadata->def;
     }
 
     return code;
-}
-
-JL_DLLEXPORT uint8_t jl_ir_flag_inferred(jl_string_t *data)
-{
-    if (jl_is_code_info(data))
-        return ((jl_code_info_t*)data)->inferred;
-    assert(jl_is_string(data));
-    jl_code_info_flags_t flags;
-    flags.packed = jl_string_data(data)[ir_offset_flags];
-    return flags.bits.inferred;
 }
 
 JL_DLLEXPORT uint8_t jl_ir_flag_inlining(jl_string_t *data)

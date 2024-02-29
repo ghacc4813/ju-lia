@@ -17,7 +17,7 @@ function concrete_eval_invoke(interp::AbstractInterpreter,
     if (is_foldable(effects) && is_all_const_arg(argtypes, #=start=#1) &&
         (is_nonoverlayed(interp) || is_nonoverlayed(effects)))
         args = collect_const_args(argtypes, #=start=#1)
-        value = let world = get_world_counter(interp)
+        value = let world = get_inference_world(interp)
             try
                 Core._call_in_world_total(world, args...)
             catch
@@ -58,11 +58,12 @@ function kill_block!(ir::IRCode, bb::Int)
         inst = ir[SSAValue(bidx)]
         inst[:stmt] = nothing
         inst[:type] = Bottom
-        inst[:flag] = IR_FLAG_EFFECT_FREE | IR_FLAG_NOTHROW
+        inst[:flag] = IR_FLAGS_REMOVABLE
     end
     ir[SSAValue(last(stmts))][:stmt] = ReturnNode()
     return
 end
+kill_block!(ir::IRCode) = (bb::Int)->kill_block!(ir, bb)
 
 function update_phi!(irsv::IRInterpretationState, from::Int, to::Int)
     ir = irsv.ir
@@ -96,32 +97,14 @@ function kill_terminator_edges!(irsv::IRInterpretationState, term_idx::Int, bb::
     elseif isa(stmt, ReturnNode)
         # Nothing to do
     else
-        @assert !isexpr(stmt, :enter)
+        @assert !isa(stmt, EnterNode)
         kill_edge!(irsv, bb, bb+1)
     end
 end
 
 function kill_edge!(irsv::IRInterpretationState, from::Int, to::Int)
-    ir = irsv.ir
-    kill_edge!(ir, from, to, update_phi!(irsv))
-
-    lazydomtree = irsv.lazydomtree
-    domtree = nothing
-    if isdefined(lazydomtree, :domtree)
-        domtree = get!(lazydomtree)
-        domtree_delete_edge!(domtree, ir.cfg.blocks, from, to)
-    elseif length(ir.cfg.blocks[to].preds) != 0
-        # TODO: If we're not maintaining the domtree, computing it just for this
-        # is slightly overkill - just the dfs tree would be enough.
-        domtree = get!(lazydomtree)
-    end
-
-    if domtree !== nothing && bb_unreachable(domtree, to)
-        kill_block!(ir, to)
-        for edge in ir.cfg.blocks[to].succs
-            kill_edge!(irsv, to, edge)
-        end
-    end
+    kill_edge!(get!(irsv.lazyreachability), irsv.ir.cfg, from, to,
+               update_phi!(irsv), kill_block!(irsv.ir))
 end
 
 function reprocess_instruction!(interp::AbstractInterpreter, inst::Instruction, idx::Int,
@@ -177,11 +160,18 @@ function reprocess_instruction!(interp::AbstractInterpreter, inst::Instruction, 
         elseif head === :gc_preserve_begin ||
                head === :gc_preserve_end
             return false
+        elseif head === :leave
+            return false
         else
             error("reprocess_instruction!: unhandled expression found")
         end
     elseif isa(stmt, PhiNode)
         rt = abstract_eval_phi_stmt(interp, stmt, idx, irsv)
+    elseif isa(stmt, UpsilonNode)
+        rt = argextype(stmt.val, irsv.ir)
+    elseif isa(stmt, PhiCNode)
+        # Currently not modeled
+        return false
     elseif isa(stmt, ReturnNode)
         # Handled at the very end
         return false
@@ -197,7 +187,7 @@ function reprocess_instruction!(interp::AbstractInterpreter, inst::Instruction, 
     if rt !== nothing
         if isa(rt, Const)
             inst[:type] = rt
-            if is_inlineable_constant(rt.val) && has_flag(inst, (IR_FLAG_EFFECT_FREE | IR_FLAG_NOTHROW))
+            if is_inlineable_constant(rt.val) && has_flag(inst, IR_FLAGS_REMOVABLE)
                 inst[:stmt] = quoted(rt.val)
             end
             return true
@@ -222,8 +212,8 @@ function process_terminator!(@nospecialize(stmt), bb::Int, bb_ip::BitSetBoundedM
         backedge || push!(bb_ip, stmt.dest)
         push!(bb_ip, bb+1)
         return backedge
-    elseif isexpr(stmt, :enter)
-        dest = stmt.args[1]::Int
+    elseif isa(stmt, EnterNode)
+        dest = stmt.catch_dest
         @assert dest > bb
         push!(bb_ip, dest)
         push!(bb_ip, bb+1)
@@ -278,6 +268,15 @@ end
 populate_def_use_map!(tpdum::TwoPhaseDefUseMap, ir::IRCode) =
     populate_def_use_map!(tpdum, BBScanner(ir))
 
+function is_all_const_call(@nospecialize(stmt), interp::AbstractInterpreter, irsv::IRInterpretationState)
+    isexpr(stmt, :call) || return false
+    @inbounds for i = 2:length(stmt.args)
+        argtype = abstract_eval_value(interp, stmt.args[i], nothing, irsv)
+        is_const_argtype(argtype) || return false
+    end
+    return true
+end
+
 function _ir_abstract_constant_propagation(interp::AbstractInterpreter, irsv::IRInterpretationState;
         externally_refined::Union{Nothing,BitSet} = nothing)
     (; ir, tpdum, ssa_refined) = irsv
@@ -302,6 +301,9 @@ function _ir_abstract_constant_propagation(interp::AbstractInterpreter, irsv::IR
         if has_flag(flag, IR_FLAG_REFINED)
             any_refined = true
             sub_flag!(inst, IR_FLAG_REFINED)
+        elseif is_all_const_call(stmt, interp, irsv)
+            # force reinference on calls with all constant arguments
+            any_refined = true
         end
         for ur in userefs(stmt)
             val = ur[]
@@ -317,8 +319,7 @@ function _ir_abstract_constant_propagation(interp::AbstractInterpreter, irsv::IR
             delete!(ssa_refined, idx)
         end
         check_ret!(stmt, idx)
-        is_terminator_or_phi = (isa(stmt, PhiNode) || isa(stmt, GotoNode) ||
-            isa(stmt, GotoIfNot) || isa(stmt, ReturnNode) || isexpr(stmt, :enter))
+        is_terminator_or_phi = (isa(stmt, PhiNode) || isterminator(stmt))
         if typ === Bottom && !(idx == lstmt && is_terminator_or_phi)
             return true
         end
@@ -407,6 +408,11 @@ function _ir_abstract_constant_propagation(interp::AbstractInterpreter, irsv::IR
 
     nothrow = noub = true
     for idx = 1:length(ir.stmts)
+        if ir[SSAValue(idx)][:stmt] === nothing
+            # skip `nothing` statement, which might be inserted as a dummy node,
+            # e.g. by `finish_current_bb!` without explicitly marking it as `:nothrow`
+            continue
+        end
         flag = ir[SSAValue(idx)][:flag]
         nothrow &= has_flag(flag, IR_FLAG_NOTHROW)
         noub &= has_flag(flag, IR_FLAG_NOUB)
