@@ -480,7 +480,7 @@ JL_DLLEXPORT jl_value_t *jl_call_in_typeinf_world(jl_value_t **args, int nargs)
 
 JL_DLLEXPORT jl_code_instance_t *jl_get_method_inferred(
         jl_method_instance_t *mi JL_PROPAGATES_ROOT, jl_value_t *rettype,
-        size_t min_world, size_t max_world, jl_debuginfo_t *edges)
+        size_t min_world, size_t max_world, jl_debuginfo_t *di /*jl_svec_t *edges*/)
 {
     jl_value_t *owner = jl_nothing; // TODO: owner should be arg
     jl_code_instance_t *codeinst = jl_atomic_load_relaxed(&mi->cache);
@@ -489,21 +489,21 @@ JL_DLLEXPORT jl_code_instance_t *jl_get_method_inferred(
             jl_atomic_load_relaxed(&codeinst->max_world) == max_world &&
             jl_egal(codeinst->owner, owner) &&
             jl_egal(codeinst->rettype, rettype)) {
-            if (edges == NULL)
+            if (di == NULL)
                 return codeinst;
             jl_debuginfo_t *debuginfo = jl_atomic_load_relaxed(&codeinst->debuginfo);
-            if (edges == debuginfo)
+            if (di == debuginfo)
                 return codeinst;
-            if (debuginfo == NULL && jl_atomic_cmpswap_relaxed(&codeinst->debuginfo, &debuginfo, edges))
+            if (debuginfo == NULL && jl_atomic_cmpswap_relaxed(&codeinst->debuginfo, &debuginfo, di))
                 return codeinst;
-            if (debuginfo && jl_egal((jl_value_t*)debuginfo, (jl_value_t*)edges))
+            if (debuginfo && jl_egal((jl_value_t*)debuginfo, (jl_value_t*)di))
                 return codeinst;
         }
         codeinst = jl_atomic_load_relaxed(&codeinst->next);
     }
     codeinst = jl_new_codeinst(
         mi, owner, rettype, (jl_value_t*)jl_any_type, NULL, NULL,
-        0, min_world, max_world, 0, jl_nothing, 0, edges);
+        0, min_world, max_world, 0, jl_nothing, 0, di);
     jl_mi_cache_insert(mi, codeinst);
     return codeinst;
 }
@@ -527,7 +527,7 @@ JL_DLLEXPORT jl_code_instance_t *jl_new_codeinst(
         int32_t const_flags, size_t min_world, size_t max_world,
         uint32_t effects, jl_value_t *analysis_results,
         uint8_t relocatability,
-        jl_debuginfo_t *edges /* , int absolute_max*/)
+        jl_debuginfo_t *di /*, jl_svec_t *edges, int absolute_max*/)
 {
     jl_task_t *ct = jl_current_task;
     assert(min_world <= max_world && "attempting to set invalid world constraints");
@@ -535,6 +535,7 @@ JL_DLLEXPORT jl_code_instance_t *jl_new_codeinst(
             jl_code_instance_type);
     codeinst->def = mi;
     codeinst->owner = owner;
+    codeinst->edges = jl_emptysvec;
     jl_atomic_store_relaxed(&codeinst->min_world, min_world);
     jl_atomic_store_relaxed(&codeinst->max_world, max_world);
     codeinst->rettype = rettype;
@@ -543,7 +544,7 @@ JL_DLLEXPORT jl_code_instance_t *jl_new_codeinst(
     if ((const_flags & 2) == 0)
         inferred_const = NULL;
     codeinst->rettype_const = inferred_const;
-    jl_atomic_store_relaxed(&codeinst->debuginfo, (jl_value_t*)edges == jl_nothing ? NULL : edges);
+    jl_atomic_store_relaxed(&codeinst->debuginfo, (jl_value_t*)di == jl_nothing ? NULL : di);
     jl_atomic_store_relaxed(&codeinst->specptr.fptr, NULL);
     jl_atomic_store_relaxed(&codeinst->invoke, NULL);
     if ((const_flags & 1) != 0) {

@@ -1015,6 +1015,8 @@ JL_DLLEXPORT jl_code_info_t *jl_uncompress_ir(jl_method_t *m, jl_code_instance_t
         jl_gc_wb(code, code->rettype);
         code->min_world = jl_atomic_load_relaxed(&metadata->min_world);
         code->max_world = jl_atomic_load_relaxed(&metadata->max_world);
+        code->edges = (jl_value_t*)metadata->edges;
+        jl_gc_wb(code, code->edges);
     }
 
     return code;

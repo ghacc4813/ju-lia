@@ -637,10 +637,10 @@ JL_DLLEXPORT jl_code_info_t *jl_new_code_info_uninit(void)
     src->slotnames = NULL;
     src->slottypes = jl_nothing;
     src->rettype = (jl_value_t*)jl_any_type;
+    src->edges = (jl_value_t*)jl_emptysvec;
     src->parent = (jl_method_instance_t*)jl_nothing;
     src->min_world = 1;
     src->max_world = ~(size_t)0;
-    src->edges = jl_nothing;
     src->propagate_inbounds = 0;
     src->has_fcall = 0;
     src->nospecializeinfer = 0;
@@ -801,15 +801,25 @@ JL_DLLEXPORT jl_code_info_t *jl_code_for_staged(jl_method_instance_t *mi, size_t
 
             if (uninferred->edges != jl_nothing) {
                 // N.B.: This needs to match `store_backedges` on the julia side
-                jl_array_t *edges = (jl_array_t*)uninferred->edges;
-                for (size_t i = 0; i < jl_array_len(edges); ++i) {
-                    jl_value_t *kind = jl_array_ptr_ref(edges, i);
+                jl_value_t *edges = uninferred->edges;
+                size_t l;
+                jl_value_t **data;
+                if (jl_is_svec(edges)) {
+                    l = jl_svec_len(edges);
+                    data = jl_svec_data(edges);
+                }
+                else {
+                    l = jl_array_dim0(edges);
+                    data = jl_array_data(edges, jl_value_t*);
+                }
+                for (size_t i = 0; i < l; ++i) {
+                    jl_value_t *kind = data[i];
                     if (jl_is_method_instance(kind)) {
                         jl_method_instance_add_backedge((jl_method_instance_t*)kind, jl_nothing, mi);
                     } else if (jl_is_mtable(kind)) {
-                        jl_method_table_add_backedge((jl_methtable_t*)kind, jl_array_ptr_ref(edges, ++i), (jl_value_t*)mi);
+                        jl_method_table_add_backedge((jl_methtable_t*)kind, data[++i], (jl_value_t*)mi);
                     } else {
-                        jl_method_instance_add_backedge((jl_method_instance_t*)jl_array_ptr_ref(edges, ++i), kind, mi);
+                        jl_method_instance_add_backedge((jl_method_instance_t*)data[++i], kind, mi);
                     }
                 }
             }

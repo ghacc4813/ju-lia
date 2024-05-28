@@ -581,7 +581,7 @@ function finishinfer!(me::InferenceState, interp::AbstractInterpreter)
         append!(s_edges, edges)
         empty!(edges)
     end
-    if me.src.edges !== nothing
+    if me.src.edges !== nothing && me.src.edges !== Core.svec()
         append!(s_edges, me.src.edges::Vector)
     end
     # inspect whether our inference had a limited result accuracy,
