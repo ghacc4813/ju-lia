@@ -231,6 +231,7 @@ function finish!(interp::AbstractInterpreter, caller::InferenceState;
     end
     if isdefined(result, :ci)
         inferred_result = nothing
+        edges = Core.svec() # This should be a computed input, for now it is approximated (badly) here
         relocatability = 0x1
         const_flag = is_result_constabi_eligible(result)
         if is_cached(caller) || !can_discard_trees
@@ -239,7 +240,9 @@ function finish!(interp::AbstractInterpreter, caller::InferenceState;
                 inferred_result = transform_result_for_cache(interp, result.linfo, result.valid_worlds, result, can_discard_trees)
                 relocatability = 0x0
                 if inferred_result isa CodeInfo
-                    edges = inferred_result.debuginfo
+                    edges = ccall(:jl_ir_edges_legacy, Any, (Any,), inferred_result.code)
+                    inferred_result.edges = edges
+                    di = inferred_result.debuginfo
                     uncompressed = inferred_result
                     inferred_result = maybe_compress_codeinfo(interp, result.linfo, inferred_result, can_discard_trees)
                     result.is_src_volatile |= uncompressed !== inferred_result
@@ -257,14 +260,14 @@ function finish!(interp::AbstractInterpreter, caller::InferenceState;
             end
             # n.b. relocatability = (isa(inferred_result, String) && inferred_result[end]) || inferred_result === nothing
         end
-        if !@isdefined edges
-            edges = DebugInfo(result.linfo)
+        if !@isdefined di
+            di = DebugInfo(result.linfo)
         end
-        ccall(:jl_update_codeinst, Cvoid, (Any, Any, Int32, UInt, UInt, UInt32, Any, UInt8, Any),
+        ccall(:jl_update_codeinst, Cvoid, (Any, Any, Int32, UInt, UInt, UInt32, Any, UInt8, Any, Any),
             ci, inferred_result, const_flag,
             first(result.valid_worlds), last(result.valid_worlds),
             encode_effects(result.ipo_effects), result.analysis_results,
-            relocatability, edges)
+            relocatability, di, edges)
     end
     return nothing
 end
@@ -384,7 +387,7 @@ function CodeInstance(interp::AbstractInterpreter, result::InferenceResult)
         widenconst(result_type), widenconst(result.exc_result), rettype_const, nothing,
         const_flags, first(result.valid_worlds), last(result.valid_worlds),
         encode_effects(result.ipo_effects), result.analysis_results,
-        relocatability, nothing)
+        relocatability, nothing, Core.svec())
 end
 
 function transform_result_for_cache(interp::AbstractInterpreter,
@@ -988,6 +991,7 @@ function codeinfo_for_const(interp::AbstractInterpreter, mi::MethodInstance, @no
     tree.debuginfo = DebugInfo(mi)
     tree.ssaflags = UInt32[0]
     tree.rettype = Core.Typeof(val)
+    tree.edges = Core.svec()
     set_inlineable!(tree, true)
     tree.parent = mi
     return tree
@@ -1005,7 +1009,7 @@ function codeinstance_for_const_with_code(interp::AbstractInterpreter, code::Cod
     return CodeInstance(code.def, cache_owner(interp), code.rettype, code.exctype, code.rettype_const, src,
         Int32(0x3), code.min_world, code.max_world,
         code.purity_bits, code.analysis_results,
-        code.relocatability, src.debuginfo)
+        code.relocatability, src.debuginfo, src.edges)
 end
 
 result_is_constabi(interp::AbstractInterpreter, result::InferenceResult,
@@ -1166,7 +1170,7 @@ function typeinf_ext(interp::AbstractInterpreter, mi::MethodInstance, source_mod
             src isa CodeInfo || return nothing
             return CodeInstance(mi, cache_owner(interp), Any, Any, nothing, src, Int32(0),
                 get_inference_world(interp), get_inference_world(interp),
-                UInt32(0), nothing, UInt8(0), src.debuginfo)
+                UInt32(0), nothing, UInt8(0), src.debuginfo, src.edges)
         end
     end
     lock_mi_inference(interp, mi)
