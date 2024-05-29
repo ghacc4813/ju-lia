@@ -75,11 +75,11 @@ Here is an overview of some of the subdirectories that may exist in a depot:
 
 * `artifacts`: Contains content that packages use for which Pkg manages the installation of.
 * `clones`: Contains full clones of package repos. Maintained by `Pkg.jl` and used as a cache.
-* `config`: Contains julia-level configuration such as a `startup.jl`
+* `config`: Contains julia-level configuration such as a `startup.jl`.
 * `compiled`: Contains precompiled `*.ji` files for packages. Maintained by Julia.
 * `dev`: Default directory for `Pkg.develop`. Maintained by `Pkg.jl` and the user.
 * `environments`: Default package environments. For instance the global environment for a specific julia version. Maintained by `Pkg.jl`.
-* `logs`: Contains logs of `Pkg` and `REPL` operations. Maintained by `Pkg.jl` and `Julia`.
+* `logs`: Contains logs of `Pkg` and `REPL` operations. Maintained by `Pkg.jl` and Julia.
 * `packages`: Contains packages, some of which were explicitly installed and some which are implicit dependencies. Maintained by `Pkg.jl`.
 * `registries`: Contains package registries. By default only `General`. Maintained by `Pkg.jl`.
 * `scratchspaces`: Contains content that a package itself installs via the [`Scratch.jl`](https://github.com/JuliaPackaging/Scratch.jl) package. `Pkg.gc()` will delete content that is known to be unused.
@@ -245,8 +245,14 @@ function init_load_path()
     if haskey(ENV, "JULIA_LOAD_PATH")
         paths = parse_load_path(ENV["JULIA_LOAD_PATH"])
     else
-        paths = filter!(env -> env !== nothing,
-            String[env == "@." ? current_project() : env for env in DEFAULT_LOAD_PATH])
+        paths = String[]
+        for env in DEFAULT_LOAD_PATH
+            if env == "@."
+                env = current_project()
+                env === nothing && continue
+            end
+            push!(paths, env)
+        end
     end
     append!(empty!(LOAD_PATH), paths)
 end
@@ -272,7 +278,7 @@ function load_path_expand(env::AbstractString)::Union{String, Nothing}
         env == "@" && return active_project(false)
         env == "@." && return current_project()
         env == "@stdlib" && return Sys.STDLIB
-        if startswith(env, "@scriptdir")
+        if startswith(env, "@script")
             if @isdefined(PROGRAM_FILE)
                 dir = dirname(PROGRAM_FILE)
             else
@@ -283,7 +289,12 @@ function load_path_expand(env::AbstractString)::Union{String, Nothing}
                 end
                 dir = dirname(ARGS[1])
             end
-            return abspath(replace(env, "@scriptdir" => dir))
+            if env == "@script"  # complete match, not startswith, so search upwards
+                return current_project(dir)
+            else
+                # starts with, so assume relative path is after
+                return abspath(replace(env, "@script" => dir))
+            end
         end
         env = replace(env, '#' => VERSION.major, count=1)
         env = replace(env, '#' => VERSION.minor, count=1)

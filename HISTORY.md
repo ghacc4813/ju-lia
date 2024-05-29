@@ -59,7 +59,7 @@ Compiler/Runtime improvements
 Command-line option changes
 ---------------------------
 
-* The entry point for Julia has been standardized to `Main.main(ARGS)`. This must be explicitly opted into using the `@main` macro
+* The entry point for Julia has been standardized to `Main.main(Base.ARGS)`. This must be explicitly opted into using the `@main` macro
 (see the docstring for further details). When opted-in, and julia is invoked to run a script or expression
 (i.e. using `julia script.jl` or `julia -e expr`), julia will subsequently run the `Main.main` function automatically.
 This is intended to unify script and compilation workflows, where code loading may happen
@@ -68,6 +68,7 @@ difference between defining a `main` function and executing the code directly at
 * The `--compiled-modules` and `--pkgimages` flags can now be set to `existing`, which will
   cause Julia to consider loading existing cache files, but not to create new ones ([#50586]
   and [#52573]).
+* The `--project` argument now accepts `@script` to give a path to a directory with a Project.toml relative to the passed script file. `--project=@script/foo` for the `foo` subdirectory. If no path is given after (i.e. `--project=@script`) then (like `--project=@.`) the directory and its parents are searched for a Project.toml ([#50864] and [#53352])
 
 Multi-threading changes
 -----------------------
@@ -86,7 +87,6 @@ New library functions
 * `copyuntil(out, io, delim)` and `copyline(out, io)` copy data into an `out::IO` stream ([#48273]).
 * `eachrsplit(string, pattern)` iterates split substrings right to left.
 * `Sys.username()` can be used to return the current user's username ([#51897]).
-* `wrap(Array, m::Union{MemoryRef{T}, Memory{T}}, dims)` is the safe counterpart to `unsafe_wrap` ([#52049]).
 * `GC.logging_enabled()` can be used to test whether GC logging has been enabled via `GC.enable_logging` ([#51647]).
 * `IdSet` is now exported from Base and considered public ([#53262]).
 

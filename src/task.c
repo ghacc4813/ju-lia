@@ -1564,23 +1564,6 @@ static void jl_set_fiber(jl_ucontext_t *t)
 }
 #endif
 
-#if defined(JL_HAVE_ASYNCIFY)
-#if defined(_COMPILER_TSAN_ENABLED_)
-#error TSAN support not currently implemented for this tasking model
-#endif
-
-static char *jl_alloc_fiber(_jl_ucontext_t *t, size_t *ssize, jl_task_t *owner) JL_NOTSAFEPOINT
-{
-    void *stk = jl_malloc_stack(ssize, owner);
-    if (stk == NULL)
-        return NULL;
-    t->stackbottom = stk;
-    t->stacktop = ((char*)stk) + *ssize;
-    return (char*)stk;
-}
-// jl_*_fiber implemented in js
-#endif
-
 // Initialize a root task using the given stack.
 jl_task_t *jl_init_root_task(jl_ptls_t ptls, void *stack_lo, void *stack_hi)
 {
@@ -1649,6 +1632,7 @@ jl_task_t *jl_init_root_task(jl_ptls_t ptls, void *stack_lo, void *stack_hi)
     JL_GC_PROMISE_ROOTED(ct);
     jl_set_pgcstack(&ct->gcstack);
     assert(jl_current_task == ct);
+    assert(jl_current_task->ptls == ptls);
 
 #ifdef _COMPILER_TSAN_ENABLED_
     ct->ctx.tsan_state = __tsan_get_current_fiber();

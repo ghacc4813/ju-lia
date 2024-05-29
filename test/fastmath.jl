@@ -256,6 +256,28 @@ end
 
 @testset "literal powers" begin
     @test @fastmath(2^-2) == @fastmath(2.0^-2) == 0.25
+    # Issue #53817
+    # Note that exponent -2^63 fails testing because of issue #53881
+    # Therefore we test with -(2^63-1). For Int == Int32 there is an analogue restriction.
+    # See also PR #53860.
+    if Int == Int64
+        @test @fastmath(2^-9223372036854775807) === 0.0
+        @test_throws DomainError @fastmath(2^-9223372036854775809)
+        @test @fastmath(1^-9223372036854775807) isa Float64
+        @test @fastmath(1^-9223372036854775809) isa Int
+    elseif Int == Int32
+        @test @fastmath(2^-2147483647) === 0.0
+        @test_throws DomainError @fastmath(2^-2147483649)
+        @test @fastmath(1^-2147483647) isa Float64
+        @test @fastmath(1^-2147483649) isa Int
+    end
+    @test_throws MethodError @fastmath(^(2))
+end
+# issue #53857
+@testset "fast_pow" begin
+    n = Int64(2)^52
+    @test @fastmath (1 + 1 / n) ^ n ≈ ℯ
+    @test @fastmath (1 + 1 / n) ^ 4503599627370496 ≈ ℯ
 end
 
 @testset "sincos fall-backs" begin
