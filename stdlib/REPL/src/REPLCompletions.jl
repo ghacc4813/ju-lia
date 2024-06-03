@@ -137,7 +137,7 @@ end
 
 function append_filtered_mod_names!(ffunc::Function, suggestions::Vector{Completion},
                                     mod::Module, name::String)
-    ssyms = names(mod; all=true, imported=true, usings=true)
+    ssyms = names(mod; non_public=true, imported=true, usings=true)
     filter!(ffunc, ssyms)
     macros = filter(x -> startswith(String(x), "@" * name), ssyms)
     syms = String[sprint((io,s)->Base.show_sym(io, s; allow_macroname=true), s) for s in ssyms if completes_global(String(s), name)]
@@ -180,9 +180,7 @@ function complete_symbol!(suggestions::Vector{Completion},
         let modname = nameof(mod),
             is_main = mod===Main
             append_filtered_mod_names!(suggestions, mod, name) do s::Symbol
-                if Base.isdeprecated(mod, s)
-                    return false
-                elseif s === modname
+                if s === modname
                     return false # exclude `Main.Main.Main`, etc.
                 elseif complete_modules_only && !completes_module(mod, s)
                     return false
@@ -751,9 +749,9 @@ end
 MAX_ANY_METHOD_COMPLETIONS::Int = 10
 function recursive_explore_names!(seen::IdSet, callee_module::Module, initial_module::Module, exploredmodules::IdSet{Module}=IdSet{Module}())
     push!(exploredmodules, callee_module)
-    for name in names(callee_module; all=true, imported=true)
-        if !Base.isdeprecated(callee_module, name) && !startswith(string(name), '#') && isdefined(initial_module, name)
-            func = getfield(callee_module, name)
+    for name in names(callee_module; non_public=true, imported=true)
+        if isdefined(initial_module, name) # TODO use `usings=true` instead here?
+            func = getglobal(initial_module, name)
             if !isa(func, Module)
                 funct = Core.Typeof(func)
                 push!(seen, funct)
