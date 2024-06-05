@@ -581,6 +581,11 @@ JL_DLLEXPORT void jl_update_codeinst(
     jl_gc_wb(codeinst, inferred);
 }
 
+JL_DLLEXPORT jl_code_instance_t *jl_new_codeinst_uninit(jl_method_instance_t *mi, jl_value_t *owner)
+{
+    return jl_new_codeinst(mi, owner, NULL, NULL, NULL, NULL, 0, 0, 0, 0, 0, NULL, 0, NULL);
+}
+
 JL_DLLEXPORT void jl_mi_cache_insert(jl_method_instance_t *mi JL_ROOTING_ARGUMENT,
                                      jl_code_instance_t *ci JL_ROOTED_ARGUMENT JL_MAYBE_UNROOTED)
 {
