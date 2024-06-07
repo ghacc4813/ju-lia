@@ -136,8 +136,9 @@ function appendmacro!(syms, macros, needle, endchar)
 end
 
 function append_filtered_mod_names!(ffunc::Function, suggestions::Vector{Completion},
-                                    mod::Module, name::String)
-    ssyms = names(mod; all=true, imported=true, usings=true)
+                                    mod::Module, name::String, complete_internal_only::Bool)
+    imported = usings = !complete_internal_only
+    ssyms = names(mod; all=true, imported, usings)
     filter!(ffunc, ssyms)
     macros = filter(x -> startswith(String(x), "@" * name), ssyms)
     syms = String[sprint((io,s)->Base.show_sym(io, s; allow_macroname=true), s) for s in ssyms if completes_global(String(s), name)]
@@ -152,12 +153,14 @@ end
 # REPL Symbol Completions
 function complete_symbol!(suggestions::Vector{Completion},
                           @nospecialize(ex), name::String, context_module::Module;
-                          complete_modules_only::Bool=false)
+                          complete_modules_only::Bool=false,
+                          shift::Bool=false)
     mod = context_module
 
     lookup_module = true
     t = Union{}
     val = nothing
+    complete_internal_only = false
     if ex !== nothing
         res = repl_eval_ex(ex, context_module)
         res === nothing && return Completion[]
@@ -165,6 +168,9 @@ function complete_symbol!(suggestions::Vector{Completion},
             val = res.val
             if isa(val, Module)
                 mod = val
+                if !shift
+                    complete_internal_only = true
+                end
             else
                 lookup_module = false
                 t = typeof(val)
@@ -178,7 +184,7 @@ function complete_symbol!(suggestions::Vector{Completion},
     if lookup_module
         let modname = nameof(mod),
             is_main = mod===Main
-            append_filtered_mod_names!(suggestions, mod, name) do s::Symbol
+            append_filtered_mod_names!(suggestions, mod, name, complete_internal_only) do s::Symbol
                 if Base.isdeprecated(mod, s)
                     return false
                 elseif s === modname
@@ -1033,7 +1039,8 @@ function identify_possible_method_completion(partial, last_idx)
 end
 
 # Provide completion for keyword arguments in function calls
-function complete_keyword_argument(partial, last_idx, context_module)
+function complete_keyword_argument(partial::String, last_idx::Int, context_module::Module;
+                                   shift::Bool=false)
     frange, ex, wordrange, = identify_possible_method_completion(partial, last_idx)
     fail = Completion[], 0:-1, frange
     ex.head === :call || is_broadcasting_expr(ex) || return fail
@@ -1070,7 +1077,7 @@ function complete_keyword_argument(partial, last_idx, context_module)
 
     # Only add these if not in kwarg space. i.e. not in `foo(; `
     if kwargs_flag == 0
-        complete_symbol!(suggestions, nothing, last_word, context_module)
+        complete_symbol!(suggestions, nothing, last_word, context_module; shift)
         complete_keyval!(suggestions, last_word)
     end
 
@@ -1104,7 +1111,8 @@ function complete_identifiers!(suggestions::Vector{Completion},
                                context_module::Module, string::String, name::String,
                                pos::Int, separatorpos::Int, startpos::Int;
                                comp_keywords::Bool=false,
-                               complete_modules_only::Bool=false)
+                               complete_modules_only::Bool=false,
+                               shift::Bool=false)
     ex = nothing
     if comp_keywords
         complete_keyword!(suggestions, name)
@@ -1199,7 +1207,7 @@ function complete_identifiers!(suggestions::Vector{Completion},
             end
         end
     end
-    complete_symbol!(suggestions, ex, name, context_module; complete_modules_only)
+    complete_symbol!(suggestions, ex, name, context_module; complete_modules_only, shift)
     return suggestions
 end
 
@@ -1265,7 +1273,8 @@ function completions(string::String, pos::Int, context_module::Module=Main, shif
         separatorpos = something(findprev(isequal('.'), string, first(varrange)-1), 0)
         name = string[startpos:pos]
         complete_identifiers!(suggestions, context_module, string, name,
-                              pos, separatorpos, startpos)
+                              pos, separatorpos, startpos;
+                              shift)
         return sort!(unique!(completion_text, suggestions), by=completion_text), (separatorpos+1):pos, true
     elseif inc_tag === :cmd
         # TODO: should this call shell_completions instead of partially reimplementing it?
@@ -1395,7 +1404,7 @@ function completions(string::String, pos::Int, context_module::Module=Main, shif
     end
 
     # Check whether we can complete a keyword argument in a function call
-    kwarg_completion, wordrange = complete_keyword_argument(partial, pos, context_module)
+    kwarg_completion, wordrange = complete_keyword_argument(partial, pos, context_module; shift)
     isempty(wordrange) || return kwarg_completion, wordrange, !isempty(kwarg_completion)
 
     startpos = nextind(string, something(findprev(in(non_identifier_chars), string, pos), 0))
@@ -1461,7 +1470,7 @@ function completions(string::String, pos::Int, context_module::Module=Main, shif
 
     complete_identifiers!(suggestions, context_module, string, name,
                           pos, separatorpos, startpos;
-                          comp_keywords, complete_modules_only)
+                          comp_keywords, complete_modules_only, shift)
     return sort!(unique!(completion_text, suggestions), by=completion_text), namepos:pos, true
 end
 
