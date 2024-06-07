@@ -857,7 +857,7 @@ function resolve_todo(mi::MethodInstance, result::Union{Nothing,InferenceResult,
         (; src, effects) = inferred_result
     elseif inferred_result isa CodeInstance
         src = @atomic :monotonic inferred_result.inferred
-        effects = decode_effects(inferred_result.ipo_purity_bits)
+        effects = decode_effects(inferred_result.purity_bits)
     else
         src = nothing
         effects = Effects()
@@ -898,7 +898,7 @@ function resolve_todo(mi::MethodInstance, @nospecialize(info::CallInfo), flag::U
         (; src, effects) = cached_result
     elseif cached_result isa CodeInstance
         src = @atomic :monotonic cached_result.inferred
-        effects = decode_effects(cached_result.ipo_purity_bits)
+        effects = decode_effects(cached_result.purity_bits)
     else
         src = nothing
         effects = Effects()
@@ -1325,7 +1325,7 @@ function info_effects(@nospecialize(result), match::MethodMatch, state::Inlining
         if isa(mi, MethodInstance)
             code = get(code_cache(state), mi, nothing)
             if code isa CodeInstance
-                return decode_effects(code.ipo_purity_bits)
+                return decode_effects(code.purity_bits)
             end
         end
         return Effects()

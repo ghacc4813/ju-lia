@@ -7,7 +7,7 @@ end
 
 function concrete_eval_invoke(interp::AbstractInterpreter, ci::CodeInstance, argtypes::Vector{Any}, parent::IRInterpretationState)
     world = frame_world(parent)
-    effects = decode_effects(ci.ipo_purity_bits)
+    effects = decode_effects(ci.purity_bits)
     if (is_foldable(effects) && is_all_const_arg(argtypes, #=start=#1) &&
         (is_nonoverlayed(interp) || is_nonoverlayed(effects)))
         args = collect_const_args(argtypes, #=start=#1)

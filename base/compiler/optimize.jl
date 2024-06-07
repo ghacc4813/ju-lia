@@ -622,7 +622,7 @@ function ((; code_cache)::GetNativeEscapeCache)(mi::MethodInstance)
     if argescapes !== nothing
         return argescapes
     end
-    effects = decode_effects(codeinst.ipo_purity_bits)
+    effects = decode_effects(codeinst.purity_bits)
     if is_effect_free(effects) && is_inaccessiblememonly(effects)
         # We might not have run EA on simple frames without any escapes (e.g. when optimization
         # is skipped when result is constant-folded by abstract interpretation). If those
