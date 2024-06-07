@@ -1550,6 +1550,16 @@ end
 
         file = joinpath(depot, "dev", "non-existent.jl")
         @test_throws SystemError("opening file $(repr(file))") include(file)
+        touch(file)
+        @test include_dependency(file) === nothing
+        chmod(file, 0x000)
+
+        # same for include_dependency: #52063
+        dir = mktempdir() do dir
+            @test include_dependency(dir) === nothing
+            dir
+        end
+        @test_throws SystemError("opening file or folder $(repr(dir))") include_dependency(dir)
     end
 end
 
