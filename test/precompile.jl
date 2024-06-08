@@ -15,6 +15,11 @@ FooBase_module = :FooBase4b3a94a1a081a8cb
 end
 using .ConflictingBindings
 
+@testset "object_build_id" begin
+    @test Base.object_build_id([1]) === nothing
+    @test Base.object_build_id(Base) == Base.module_build_id(Base)
+end
+
 # method root provenance
 
 rootid(m::Module) = Base.module_build_id(Base.parentmodule(m)) % UInt64
@@ -350,6 +355,9 @@ precompile_test_harness(false) do dir
         @test objectid(Foo.a_vec_int) === Foo.oid_vec_int
         @test objectid(Foo.a_mat_int) === Foo.oid_mat_int
         @test Foo.oid_vec_int !== Foo.oid_mat_int
+        @test Base.object_build_id(Foo.a_vec_int) == Base.object_build_id(Foo.a_mat_int)
+        @test Base.object_build_id(Foo) == Base.module_build_id(Foo)
+        @test Base.object_build_id(Foo.a_vec_int) == Base.module_build_id(Foo)
     end
 
     @eval begin function ccallable_test()
@@ -437,7 +445,9 @@ precompile_test_harness(false) do dir
             # and their dependencies
             Dict(Base.PkgId(Base.root_module(Base, :SHA)) => Base.module_build_id(Base.root_module(Base, :SHA))),
             Dict(Base.PkgId(Base.root_module(Base, :Markdown)) => Base.module_build_id(Base.root_module(Base, :Markdown))),
+            Dict(Base.PkgId(Base.root_module(Base, :JuliaSyntaxHighlighting)) => Base.module_build_id(Base.root_module(Base, :JuliaSyntaxHighlighting))),
             Dict(Base.PkgId(Base.root_module(Base, :StyledStrings)) => Base.module_build_id(Base.root_module(Base, :StyledStrings))),
+
             # and their dependencies
             Dict(Base.PkgId(Base.root_module(Base, :Base64)) => Base.module_build_id(Base.root_module(Base, :Base64))),
         )
@@ -1013,7 +1023,6 @@ precompile_test_harness("code caching") do dir
         @test mi.specTypes.parameters[end] === Integer ? !hv : hv
     end
 
-    setglobal!(Main, :inval, invalidations)
     idxs = findall(==("verify_methods"), invalidations)
     idxsbits = filter(idxs) do i
         mi = invalidations[i-1]
@@ -1320,6 +1329,25 @@ precompile_test_harness("package_callbacks") do dir
     try
         @eval using $(Symbol(Test4_module))
         wait(t)
+    finally
+        pop!(Base.package_callbacks)
+    end
+    Test5_module = :Teste4095a85
+    write(joinpath(dir, "$(Test5_module).jl"),
+    """
+    module $(Test5_module)
+    end
+    """)
+    Base.compilecache(Base.PkgId("$(Test5_module)"))
+    cnt = 0
+    push!(Base.package_callbacks, _->(cnt += 1))
+    try
+        @eval using $(Symbol(Test5_module))
+        @eval using $(Symbol(Test5_module))
+        @eval using $(Symbol(Test5_module))
+        @eval using $(Symbol(Test5_module))
+        @eval using $(Symbol(Test5_module))
+        @test cnt == 1
     finally
         pop!(Base.package_callbacks)
     end
@@ -1924,6 +1952,21 @@ precompile_test_harness("Test flags") do load_path
     id = Base.identify_package("TestFlags")
     @test Base.isprecompiled(id, ;flags=modified_flags)
     @test !Base.isprecompiled(id, ;flags=current_flags)
+end
+
+precompile_test_harness("No backedge precompile") do load_path
+    # Test that the system doesn't accidentally forget to revalidate a method without backedges
+    write(joinpath(load_path, "NoBackEdges.jl"),
+          """
+          module NoBackEdges
+          using Core.Intrinsics: add_int
+          f(a::Int, b::Int) = add_int(a, b)
+          precompile(f, (Int, Int))
+          end
+          """)
+    ji, ofile = Base.compilecache(Base.PkgId("NoBackEdges"))
+    @eval using NoBackEdges
+    @test first(methods(NoBackEdges.f)).specializations.cache.max_world === typemax(UInt)
 end
 
 finish_precompile_test!()

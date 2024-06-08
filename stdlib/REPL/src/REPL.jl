@@ -649,26 +649,26 @@ end
 
 beforecursor(buf::IOBuffer) = String(buf.data[1:buf.ptr-1])
 
-function complete_line(c::REPLCompletionProvider, s::PromptState, mod::Module)
+function complete_line(c::REPLCompletionProvider, s::PromptState, mod::Module; hint::Bool=false)
     partial = beforecursor(s.input_buffer)
     full = LineEdit.input_string(s)
-    ret, range, should_complete = completions(full, lastindex(partial), mod, c.modifiers.shift)
+    ret, range, should_complete = completions(full, lastindex(partial), mod, c.modifiers.shift, hint)
     c.modifiers = LineEdit.Modifiers()
     return unique!(map(completion_text, ret)), partial[range], should_complete
 end
 
-function complete_line(c::ShellCompletionProvider, s::PromptState)
+function complete_line(c::ShellCompletionProvider, s::PromptState; hint::Bool=false)
     # First parse everything up to the current position
     partial = beforecursor(s.input_buffer)
     full = LineEdit.input_string(s)
-    ret, range, should_complete = shell_completions(full, lastindex(partial))
+    ret, range, should_complete = shell_completions(full, lastindex(partial), hint)
     return unique!(map(completion_text, ret)), partial[range], should_complete
 end
 
-function complete_line(c::LatexCompletions, s)
+function complete_line(c::LatexCompletions, s; hint::Bool=false)
     partial = beforecursor(LineEdit.buffer(s))
     full = LineEdit.input_string(s)::String
-    ret, range, should_complete = bslash_completions(full, lastindex(partial))[2]
+    ret, range, should_complete = bslash_completions(full, lastindex(partial), hint)[2]
     return unique!(map(completion_text, ret)), partial[range], should_complete
 end
 
@@ -1225,27 +1225,50 @@ function setup_interface(
         end,
         ']' => function (s::MIState,o...)
             if isempty(s) || position(LineEdit.buffer(s)) == 0
-                pkgid = Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg")
-                REPLExt = Base.require_stdlib(pkgid, "REPLExt")
+                # print a dummy pkg prompt while Pkg loads
+                LineEdit.clear_line(LineEdit.terminal(s))
+                # use 6 .'s here because its the same width as the most likely `@v1.xx` env name
+                print(LineEdit.terminal(s), styled"{blue,bold:({gray:......}) pkg> }")
                 pkg_mode = nothing
-                if REPLExt isa Module && isdefined(REPLExt, :PkgCompletionProvider)
-                    for mode in repl.interface.modes
-                        if mode isa LineEdit.Prompt && mode.complete isa REPLExt.PkgCompletionProvider
-                            pkg_mode = mode
-                            break
+                transition_finished = false
+                iolock = Base.ReentrantLock() # to avoid race between tasks reading stdin & input buffer
+                # spawn Pkg load to avoid blocking typing during loading. Typing will block if only 1 thread
+                t_replswitch = Threads.@spawn begin
+                    pkgid = Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg")
+                    REPLExt = Base.require_stdlib(pkgid, "REPLExt")
+                    if REPLExt isa Module && isdefined(REPLExt, :PkgCompletionProvider)
+                        for mode in repl.interface.modes
+                            if mode isa LineEdit.Prompt && mode.complete isa REPLExt.PkgCompletionProvider
+                                pkg_mode = mode
+                                break
+                            end
+                        end
+                    end
+                    if pkg_mode !== nothing
+                        @lock iolock begin
+                            buf = copy(LineEdit.buffer(s))
+                            transition(s, pkg_mode) do
+                                LineEdit.state(s, pkg_mode).input_buffer = buf
+                            end
+                            if !isempty(s)
+                                @invokelatest(LineEdit.check_for_hint(s)) && @invokelatest(LineEdit.refresh_line(s))
+                            end
+                            transition_finished = true
                         end
                     end
                 end
-                # TODO: Cache the `pkg_mode`?
-                if pkg_mode !== nothing
-                    buf = copy(LineEdit.buffer(s))
-                    transition(s, pkg_mode) do
-                        LineEdit.state(s, pkg_mode).input_buffer = buf
+                Base.errormonitor(t_replswitch)
+                # while loading just accept all keys, no keymap functionality
+                while !istaskdone(t_replswitch)
+                    # wait but only take if task is still running
+                    peek(stdin, Char)
+                    @lock iolock begin
+                        transition_finished || edit_insert(s, read(stdin, Char))
                     end
-                    return
                 end
+            else
+                edit_insert(s, ']')
             end
-            edit_insert(s, ']')
         end,
 
         # Bracketed Paste Mode
@@ -1379,7 +1402,7 @@ function setup_interface(
                     # execute the statement
                     terminal = LineEdit.terminal(s) # This is slightly ugly but ok for now
                     raw!(terminal, false) && disable_bracketed_paste(terminal)
-                    LineEdit.mode(s).on_done(s, LineEdit.buffer(s), true)
+                    @invokelatest LineEdit.mode(s).on_done(s, LineEdit.buffer(s), true)
                     raw!(terminal, true) && enable_bracketed_paste(terminal)
                     LineEdit.push_undo(s) # when the last line is incomplete
                 end
