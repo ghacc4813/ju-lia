@@ -77,7 +77,6 @@ JL_DLLEXPORT void jl_init_options(void)
                         1,    // can_inline
                         JL_OPTIONS_POLLY_ON, // polly
                         NULL, // trace_compile
-                        0,    // trace_compile_timing
                         JL_OPTIONS_FAST_MATH_DEFAULT,
                         0,    // worker
                         NULL, // cookie
@@ -101,6 +100,7 @@ JL_DLLEXPORT void jl_init_options(void)
                         0, // strip-ir
                         0, // permalloc_pkgimg
                         0, // heap-size-hint
+                        0, // trace_compile_timing
     };
     jl_options_initialized = 1;
 }
@@ -259,7 +259,7 @@ static const char opts_hidden[]  =
     "                                               complete)\n"
     " --trace-compile={stderr|name}                 Print precompile statements for methods compiled\n"
     "                                               during execution or save to a path\n"
-    " --trace-compile-timing={yes|no*}              If --trace-compile is enabled show how long each took to\n"
+    " --trace-compile-timing                        If --trace-compile is enabled show how long each took to\n"
     "                                               compile in ms\n"
     " --image-codegen                               Force generate code in imaging mode\n"
     " --permalloc-pkgimg={yes|no*}                  Copy the data section of package images into memory\n"
@@ -814,13 +814,7 @@ restart_switch:
                 jl_errorf("fatal error: failed to allocate memory: %s", strerror(errno));
             break;
         case opt_trace_compile_timing:
-            if (!strcmp(optarg,"yes"))
-                jl_options.trace_compile_timing = 1;
-            else if (!strcmp(optarg,"no"))
-                jl_options.trace_compile_timing = 0;
-            else {
-                jl_errorf("julia: invalid argument to --trace-compile-timing (%s)", optarg);
-            }
+            jl_options.trace_compile_timing = 1;
             break;
         case opt_math_mode:
             if (!strcmp(optarg,"ieee"))
