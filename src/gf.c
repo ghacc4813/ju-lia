@@ -2479,7 +2479,7 @@ static void record_precompile_statement(jl_method_instance_t *mi, double compila
         jl_printf(s_precompile, "precompile(");
         jl_static_show(s_precompile, mi->specTypes);
         if (jl_options.trace_compile_timing) {
-            jl_printf(s_precompile, ") # %fms\n", compilation_time / 1e6);
+            jl_printf(s_precompile, ") # %.3fms\n", compilation_time / 1e6);
         }
         else {
             jl_printf(s_precompile, ")\n");
