@@ -2476,15 +2476,8 @@ static void record_precompile_statement(jl_method_instance_t *mi, double compila
         }
     }
     if (!jl_has_free_typevars(mi->specTypes)) {
-        if (jl_options.trace_compile_timing) {
-            if (s_precompile == JL_STDERR) {
-                jl_printf(s_precompile, "%6.1f ms ", compilation_time / 1e6);
-            }
-            else {
-                // keep files machine readable
-                jl_printf(s_precompile, "#= %6.1f ms =# ", compilation_time / 1e6);
-            }
-        }
+        if (jl_options.trace_compile_timing)
+            jl_printf(s_precompile, "#= %6.1f ms =# ", compilation_time / 1e6);
         jl_printf(s_precompile, "precompile(");
         jl_static_show(s_precompile, mi->specTypes);
         jl_printf(s_precompile, ")\n");
