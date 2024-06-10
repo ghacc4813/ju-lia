@@ -3736,3 +3736,60 @@ begin
     Foreign54607.bar = 9
 end
 @test Foreign54607.bar == 9
+
+# F{T} = ... has special syntax semantics, not found anywhere else in the language
+# that make `F` `const` iff an assignment to `F` is global in the relevant scope.
+# We implicitly test this elsewhere, but there's some tricky interactions with
+# explicit declarations that we test here.
+module ImplicitCurlies
+    using ..Test
+    let
+        ImplicitCurly1{T} = Ref{T}
+    end
+    @test !@isdefined(ImplicitCurly1)
+    let
+        global ImplicitCurly2
+        ImplicitCurly2{T} = Ref{T}
+    end
+    @test @isdefined(ImplicitCurly2) && isconst(@__MODULE__, :ImplicitCurly2)
+    begin
+        ImplicitCurly3{T} = Ref{T}
+    end
+    @test @isdefined(ImplicitCurly3) && isconst(@__MODULE__, :ImplicitCurly3)
+    begin
+        local ImplicitCurly4
+        ImplicitCurly4{T} = Ref{T}
+    end
+    @test !@isdefined(ImplicitCurly4)
+    @test_throws "syntax: `global const` declaration not allowed inside function" Core.eval(@__MODULE__, :(function implicit5()
+        global ImplicitCurly5
+        ImplicitCurly5{T} = Ref{T}
+    end))
+    @test !@isdefined(ImplicitCurly5)
+    function implicit6()
+        ImplicitCurly6{T} = Ref{T}
+        return ImplicitCurly6
+    end
+    @test !@isdefined(ImplicitCurly6)
+    # Check return value of assignment expr
+    @test isa((const ImplicitCurly7{T} = Ref{T}), UnionAll)
+    @test isa(begin; ImplicitCurly8{T} = Ref{T}; end, UnionAll)
+end
+
+# `const` is permitted before function assignment for legacy reasons
+const fconst_assign() = 1
+const (gconst_assign(), hconst_assign()) = (2, 3)
+@test (fconst_assign(), gconst_assign(), hconst_assign()) == (1, 2, 3)
+@test isconst(@__MODULE__, :fconst_assign)
+@test isconst(@__MODULE__, :gconst_assign)
+@test isconst(@__MODULE__, :hconst_assign)
+
+# Issue #54787
+const (destruct_const54787...,) = (1,2,3)
+@test destruct_const54787 == (1,2,3)
+@test isconst(@__MODULE__, :destruct_const54787)
+const a54787, b54787, c54787 = destruct_const54787
+@test (a54787, b54787, c54787) == (1,2,3)
+@test isconst(@__MODULE__, :a54787)
+@test isconst(@__MODULE__, :b54787)
+@test isconst(@__MODULE__, :c54787)
