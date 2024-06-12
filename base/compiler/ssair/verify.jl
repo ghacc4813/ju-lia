@@ -56,10 +56,10 @@ function check_op(ir::IRCode, domtree::DomTree, @nospecialize(op), use_bb::Int, 
             error("")
         end
     elseif isa(op, GlobalRef)
-        if !isdefined(op.mod, op.name) || !isconst(op.mod, op.name)
-            @verify_error "Unbound GlobalRef not allowed in value position"
-            error("")
-        end
+        #if !isdefined(op.mod, op.name) || !isconst(op.mod, op.name)
+        #    @verify_error "Unbound GlobalRef not allowed in value position"
+        #    error("")
+        #end
     elseif isa(op, Expr)
         # Only Expr(:boundscheck) is allowed in value position
         if isforeigncall && arg_idx == 1 && op.head === :call

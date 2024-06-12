@@ -627,19 +627,47 @@ typedef struct _jl_weakref_t {
     jl_value_t *value;
 } jl_weakref_t;
 
-typedef struct _jl_binding_t {
+enum jl_binding_import {
+    // None: The binding was not imported in this partition. It acts as a regular global or const.
+    //  ->restriction does not hold any import-related data.
+    BINDING_IMPORT_NONE     = 0x0,
+    // Implicit: The binding was implicitly import from a `using`'d module.
+    //  ->restriction holds the imported binding
+    BINDING_IMPORT_IMPLICIT = 0x1,
+    // Implicit: The binding was explicitly imported by name
+    //  ->restriction holds the imported binding
+    BINDING_IMPORT_EXPLICIT = 0x2,
+    // Guard: The binding was looked at, but no global or import was resolved at the time
+    //  ->restriction is NULL.
+    BINDING_IMPORT_GUARD    = 0x3
+};
+
+typedef struct _jl_binding_partition_t {
     JL_DATA_TYPE
-    _Atomic(jl_value_t*) value;
-    jl_globalref_t *globalref;  // cached GlobalRef for this binding
-    _Atomic(struct _jl_binding_t*) owner;  // for individual imported bindings (NULL until 'resolved')
-    _Atomic(jl_value_t*) ty;  // binding type
+    /* The use of this field depends on what kind of binding we have in this world.
+     * First look at ->imported (see above). If NONE, but `->constp`, this holds the
+     * value of the constant. Otherwise this is a global and holds the type restriction.
+     */
+    jl_value_t *restriction;
+    size_t min_world;
+    _Atomic(size_t) max_world;
+    _Atomic(struct _jl_binding_partition_t*) next;
     uint8_t constp:1;
     uint8_t exportp:1; // `public foo` sets `publicp`, `export foo` sets both `publicp` and `exportp`
     uint8_t publicp:1; // exportp without publicp is not allowed.
-    uint8_t imported:1;
+    uint8_t imported:2; // enum jl_binding_import
     uint8_t usingfailed:1;
     uint8_t deprecated:2; // 0=not deprecated, 1=renamed, 2=moved to another package
-    uint8_t padding:1;
+} jl_binding_partition_t;
+
+typedef struct _jl_binding_t {
+    JL_DATA_TYPE
+    jl_globalref_t *globalref;  // cached GlobalRef for this binding
+    // Ordered in decreasing max_world order, ranges may not overlap.
+    _Atomic(jl_binding_partition_t*) partitions;
+    _Atomic(jl_value_t*) value;
+    uint8_t declared:1;
+    uint8_t padding:7;
 } jl_binding_t;
 
 typedef struct {
@@ -931,6 +959,7 @@ extern JL_DLLIMPORT jl_value_t *jl_memoryref_uint8_type JL_GLOBALLY_ROOTED;
 extern JL_DLLIMPORT jl_value_t *jl_memoryref_any_type JL_GLOBALLY_ROOTED;
 extern JL_DLLIMPORT jl_datatype_t *jl_expr_type JL_GLOBALLY_ROOTED;
 extern JL_DLLIMPORT jl_datatype_t *jl_binding_type JL_GLOBALLY_ROOTED;
+extern JL_DLLIMPORT jl_datatype_t *jl_binding_partition_type JL_GLOBALLY_ROOTED;
 extern JL_DLLIMPORT jl_datatype_t *jl_globalref_type JL_GLOBALLY_ROOTED;
 extern JL_DLLIMPORT jl_datatype_t *jl_linenumbernode_type JL_GLOBALLY_ROOTED;
 extern JL_DLLIMPORT jl_datatype_t *jl_gotonode_type JL_GLOBALLY_ROOTED;
@@ -1504,6 +1533,7 @@ static inline int jl_field_isconst(jl_datatype_t *st, int i) JL_NOTSAFEPOINT
 #define jl_is_slotnumber(v)  jl_typetagis(v,jl_slotnumber_type)
 #define jl_is_expr(v)        jl_typetagis(v,jl_expr_type)
 #define jl_is_binding(v)     jl_typetagis(v,jl_binding_type)
+#define jl_is_binding_partition(v) jl_typetagis(v,jl_binding_partition_type)
 #define jl_is_globalref(v)   jl_typetagis(v,jl_globalref_type)
 #define jl_is_gotonode(v)    jl_typetagis(v,jl_gotonode_type)
 #define jl_is_gotoifnot(v)   jl_typetagis(v,jl_gotoifnot_type)
@@ -1750,6 +1780,28 @@ STATIC_INLINE int jl_is_concrete_type(jl_value_t *v) JL_NOTSAFEPOINT
 
 JL_DLLEXPORT int jl_isa_compileable_sig(jl_tupletype_t *type, jl_svec_t *sparams, jl_method_t *definition);
 
+// These are placeholder definitions that mostly preserve the non-partitioned behavior
+STATIC_INLINE jl_binding_partition_t *jl_get_binding_partition(jl_binding_t *b, size_t world) JL_NOTSAFEPOINT {
+    if (!b)
+        return NULL;
+    assert(jl_is_binding(b));
+    return jl_atomic_load_relaxed(&b->partitions);
+}
+
+STATIC_INLINE jl_value_t *jl_get_value_if_const(jl_binding_partition_t *bpart) JL_NOTSAFEPOINT {
+    if (!bpart)
+        return NULL;
+    assert(jl_is_binding_partition(bpart));
+    if (!bpart->constp)
+        return NULL;
+    if (bpart->imported) {
+        if (bpart->imported == BINDING_IMPORT_GUARD)
+            return NULL;
+        return jl_get_value_if_const(jl_get_binding_partition((jl_binding_t*)bpart->restriction, bpart->min_world));
+    }
+    return bpart->restriction;
+}
+
 // type constructors
 JL_DLLEXPORT jl_typename_t *jl_new_typename_in(jl_sym_t *name, jl_module_t *inmodule, int abstract, int mutabl);
 JL_DLLEXPORT jl_tvar_t *jl_new_typevar(jl_sym_t *name, jl_value_t *lb, jl_value_t *ub);
@@ -1966,7 +2018,7 @@ JL_DLLEXPORT jl_value_t *jl_checked_swap(jl_binding_t *b, jl_module_t *mod, jl_s
 JL_DLLEXPORT jl_value_t *jl_checked_replace(jl_binding_t *b, jl_module_t *mod, jl_sym_t *var, jl_value_t *expected, jl_value_t *rhs);
 JL_DLLEXPORT jl_value_t *jl_checked_modify(jl_binding_t *b, jl_module_t *mod, jl_sym_t *var, jl_value_t *op, jl_value_t *rhs);
 JL_DLLEXPORT jl_value_t *jl_checked_assignonce(jl_binding_t *b, jl_module_t *mod, jl_sym_t *var, jl_value_t *rhs JL_MAYBE_UNROOTED);
-JL_DLLEXPORT void jl_declare_constant(jl_binding_t *b, jl_module_t *mod, jl_sym_t *var);
+JL_DLLEXPORT jl_binding_partition_t *jl_declare_constant(jl_binding_t *b, jl_module_t *mod, jl_sym_t *var);
 JL_DLLEXPORT void jl_declare_constant_val(jl_binding_t *b, jl_module_t *mod, jl_sym_t *var, jl_value_t *val);
 JL_DLLEXPORT void jl_module_using(jl_module_t *to, jl_module_t *from);
 JL_DLLEXPORT void jl_module_use(jl_module_t *to, jl_module_t *from, jl_sym_t *s);

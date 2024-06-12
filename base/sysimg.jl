@@ -93,7 +93,7 @@ let
     m = Core.Module()
     GC.@preserve m begin
         print_time = @eval m (mod, t) -> (print(rpad(string(mod) * "  ", $maxlen + 3, "─"));
-                                          Base.time_print(stdout, t * 10^9); println())
+                                          Base.time_print(Base.stdout, t * 10^9); println())
         print_time(Base, (Base.end_base_include - Base.start_base_include) * 10^(-9))
 
         Base._track_dependencies[] = true
@@ -126,12 +126,12 @@ let
     tot_time = tot_time_base + tot_time_stdlib + tot_time_userimg
 
     println("Sysimage built. Summary:")
-    print("Base ──────── "); Base.time_print(stdout, tot_time_base    * 10^9); print(" "); show(IOContext(stdout, :compact=>true), (tot_time_base    / tot_time) * 100); println("%")
-    print("Stdlibs ───── "); Base.time_print(stdout, tot_time_stdlib  * 10^9); print(" "); show(IOContext(stdout, :compact=>true), (tot_time_stdlib  / tot_time) * 100); println("%")
+    print("Base ──────── "); Base.time_print(Base.stdout, tot_time_base    * 10^9); print(" "); show(IOContext(Base.stdout, :compact=>true), (tot_time_base    / tot_time) * 100); println("%")
+    print("Stdlibs ───── "); Base.time_print(Base.stdout, tot_time_stdlib  * 10^9); print(" "); show(IOContext(Base.stdout, :compact=>true), (tot_time_stdlib  / tot_time) * 100); println("%")
     if isfile("userimg.jl")
-    print("Userimg ───── "); Base.time_print(stdout, tot_time_userimg * 10^9); print(" "); show(IOContext(stdout, :compact=>true), (tot_time_userimg / tot_time) * 100); println("%")
+    print("Userimg ───── "); Base.time_print(Base.stdout, tot_time_userimg * 10^9); print(" "); show(IOContext(Base.stdout, :compact=>true), (tot_time_userimg / tot_time) * 100); println("%")
     end
-    print("Total ─────── "); Base.time_print(stdout, tot_time         * 10^9); println();
+    print("Total ─────── "); Base.time_print(Base.stdout, tot_time         * 10^9); println();
 
     empty!(LOAD_PATH)
     empty!(DEPOT_PATH)

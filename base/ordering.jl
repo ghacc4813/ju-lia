@@ -166,6 +166,7 @@ end
 # ourselves to deprecate this in v2.0.
 # The following clause means `if VERSION < v"2.0-"` but it also works during
 # bootstrap. For the same reason, we need to write `Int32` instead of `Cint`.
+function ordtype end
 if ccall(:jl_ver_major, Int32, ()) < 2
     ordtype(o::ReverseOrdering, vs::AbstractArray) = ordtype(o.fwd, vs)
     ordtype(o::Perm,            vs::AbstractArray) = ordtype(o.order, o.data)
