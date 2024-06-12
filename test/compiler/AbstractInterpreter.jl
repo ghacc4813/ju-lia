@@ -201,6 +201,15 @@ inner52938(x, types::Type, args...; kwargs...) = x
 outer52938(x) = @inline inner52938(x, Tuple{}; foo=Ref(42), bar=1)
 @test fully_eliminated(outer52938, (Any,); interp=Issue52938Interp(), retval=Argument(2))
 
+# https://github.com/JuliaGPU/CUDA.jl/issues/2241
+@newinterp Cuda2241Interp
+@MethodTable CUDA_2241_MT
+CC.method_table(interp::Cuda2241Interp) = CC.OverlayMethodTable(CC.get_inference_world(interp), CUDA_2241_MT)
+inner52938(x, types::Type, args...; kwargs...) = x
+outer52938(x) = @inline inner52938(x, Tuple{}; foo=Ref(42), bar=1)
+@consistent_overlay CUDA_2241_MT @inline Base.throw_boundserror(A, I) = error()
+@test fully_eliminated(outer52938, (Any,); interp=Cuda2241Interp(), retval=Argument(2))
+
 # Should not concrete-eval overlayed methods in semi-concrete interpretation
 @newinterp OverlaySinInterp
 @MethodTable OVERLAY_SIN_MT
