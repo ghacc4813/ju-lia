@@ -2490,12 +2490,17 @@ cases.
 See also [`setproperty!`](@ref Base.setproperty!) and [`getglobal`](@ref)
 
 # Examples
-```jldoctest
-julia> module M end;
+```jldoctest; filter = r"Stacktrace:(\\n \\[[0-9]+\\].*)*"
+julia> module M; global a; end;
 
 julia> M.a  # same as `getglobal(M, :a)`
 ERROR: UndefVarError: `a` not defined in `M`
-Suggestion: check for spelling errors or missing imports.
+Suggestion: add an appropriate import or assignment. This global was declared but not assigned.
+Stacktrace:
+ [1] getproperty(x::Module, f::Symbol)
+   @ Base ./Base.jl:42
+ [2] top-level scope
+   @ none:1
 
 julia> setglobal!(M, :a, 1)
 1
@@ -2663,23 +2668,21 @@ julia> Memory{Float64}(undef, 3)
 Memory{T}(::UndefInitializer, n)
 
 """
-    MemoryRef(memory)
-
-Construct a MemoryRef from a memory object. This does not fail, but the
-resulting memory may point out-of-bounds if the memory is empty.
+    `memoryref(::GenericMemory)`
+Construct a `GenericMemoryRef` from a memory object. This does not fail, but the
+resulting memory will point out-of-bounds if and only if the memory is empty.
 """
-MemoryRef(::Memory)
+memoryref(::GenericMemory)
 
 """
-    MemoryRef(::Memory, index::Integer)
-    MemoryRef(::MemoryRef, index::Integer)
-
-Construct a MemoryRef from a memory object and an offset index (1-based) which
+    memoryref(::GenericMemory, index::Integer)
+    memoryref(::GenericMemoryRef, index::Integer)
+Construct a `GenericMemoryRef` from a memory object and an offset index (1-based) which
 can also be negative. This always returns an inbounds object, and will throw an
 error if that is not possible (because the index would result in a shift
 out-of-bounds of the underlying memory).
 """
-MemoryRef(::Union{Memory,MemoryRef}, ::Integer)
+memoryref(::Union{GenericMemory,GenericMemoryRef}, ::Integer)
 
 """
     Vector{T}(undef, n)
