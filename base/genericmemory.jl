@@ -235,6 +235,7 @@ function setindex!(A::Memory{T}, x, i1::Int) where {T}
     memoryrefset!(ref, val, :not_atomic, @_boundscheck)
     return A
 end
+
 function setindex!(A::Memory{T}, x, i1::Int, i2::Int, I::Int...) where {T}
     @inline
     @boundscheck (i2 == 1 && all(==(1), I)) || throw_boundserror(A, (i1, i2, I...))
@@ -335,3 +336,94 @@ end
     end
 end
 view(m::GenericMemory, inds::Colon) = view(m, eachindex(m))
+
+# modify, swap and replace at index
+function getindex_atomic(
+    mem::GenericMemory,
+    i::Int,
+    order=default_access_order(mem)
+)
+    memref = memoryref(mem, i)
+    return memoryrefget(memref, order, @_boundscheck)
+end
+
+function setindex_atomic!(
+    mem::GenericMemory,
+    i::Int,
+    val,
+    order=default_access_order(mem)
+)
+    T = eltype(mem)
+    memref = memoryref(mem, i)
+    return memoryrefset!(
+        memref,
+        val isa T ? val : convert(T, val)::T,
+        order,
+        @_boundscheck
+    )
+end
+
+function setindexonce_atomic!(
+    mem::GenericMemory,
+    i::Int,
+    val,
+    success_order=default_access_order(mem),
+    fail_order=default_access_order(mem)
+)
+    T = eltype(mem)
+    memref = memoryref(mem, i)
+    return Core.memoryrefsetonce!(
+        memref,
+        val isa T ? val : convert(T, val)::T,
+        success_order,
+        fail_order,
+        @_boundscheck
+    )
+end
+
+function modifyindex!(
+    mem::GenericMemory,
+    i::Int,
+    op,
+    val,
+    order = default_access_order(mem),
+)
+    memref = memoryref(mem, i)
+    return Core.memoryrefmodify!(memref, op, val, order, @_boundscheck)
+end
+
+function swapindex!(
+    mem::GenericMemory,
+    i::Int,
+    val,
+    order = default_access_order(mem),
+)
+    T = eltype(mem)
+    memref = memoryref(mem, i)
+    return Core.memoryrefswap!(
+        memref,
+        val isa T ? val : convert(T, val)::T,
+        order,
+        @_boundscheck
+    )
+end
+
+function replaceindex!(
+    mem::GenericMemory,
+    i::Int,
+    expected,
+    desired,
+    success_order = default_access_order(mem),
+    fail_order = default_access_order(mem),
+)
+    T = eltype(mem)
+    memref = memoryref(mem, i)
+    return Core.memoryrefreplace!(
+        memref,
+        expected,
+        desired isa T ? desired : convert(T, desired)::T,
+        success_order,
+        fail_order,
+        @_boundscheck,
+    )
+end
