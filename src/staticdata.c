@@ -100,7 +100,7 @@ extern "C" {
 // TODO: put WeakRefs on the weak_refs list during deserialization
 // TODO: handle finalizers
 
-#define NUM_TAGS    191
+#define NUM_TAGS    192
 
 // An array of references that need to be restored from the sysimg
 // This is a manually constructed dual of the gvars array, which would be produced by codegen for Julia code, for C.
@@ -122,6 +122,7 @@ jl_value_t **const*const get_tags(void) {
         INSERT_TAG(jl_array_type);
         INSERT_TAG(jl_expr_type);
         INSERT_TAG(jl_binding_type);
+        INSERT_TAG(jl_binding_partition_type);
         INSERT_TAG(jl_globalref_type);
         INSERT_TAG(jl_string_type);
         INSERT_TAG(jl_module_type);
@@ -908,8 +909,8 @@ static void jl_insert_into_serialization_queue(jl_serializer_state *s, jl_value_
         for (i = 0; i < np; i++) {
             uint32_t ptr = jl_ptr_offset(t, i);
             int mutabl = t->name->mutabl;
-            if (jl_is_binding(v) && ((jl_binding_t*)v)->constp && i == 0) // value field depends on constp field
-                mutabl = 0;
+            //if (jl_is_binding(v) && ((jl_binding_t*)v)->constp && i == 0) // value field depends on constp field
+            //    mutabl = 0;
             jl_value_t *fld = get_replaceable_field(&((jl_value_t**)data)[ptr], mutabl);
             jl_queue_for_serialization_(s, fld, 1, immediate);
         }
@@ -1348,12 +1349,6 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
                 jl_binding_t *b = (jl_binding_t*)v;
                 if (b->globalref == NULL || jl_object_in_image((jl_value_t*)b->globalref->mod))
                     jl_error("Binding cannot be serialized"); // no way (currently) to recover its identity
-                // Assign type Any to any owned bindings that don't have a type.
-                // We don't want these accidentally managing to diverge later in different compilation units.
-                if (jl_atomic_load_relaxed(&b->owner) == b) {
-                    jl_value_t *old_ty = NULL;
-                    jl_atomic_cmpswap_relaxed(&b->ty, &old_ty, (jl_value_t*)jl_any_type);
-                }
             }
         }
 
@@ -1566,8 +1561,6 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
             for (i = 0; i < np; i++) {
                 size_t offset = jl_ptr_offset(t, i) * sizeof(jl_value_t*);
                 int mutabl = t->name->mutabl;
-                if (jl_is_binding(v) && ((jl_binding_t*)v)->constp && i == 0) // value field depends on constp field
-                    mutabl = 0;
                 jl_value_t *fld = get_replaceable_field((jl_value_t**)&data[offset], mutabl);
                 size_t fld_pos = offset + reloc_offset;
                 if (fld != NULL) {

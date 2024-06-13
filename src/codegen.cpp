@@ -968,6 +968,15 @@ static const auto jlgetbindingwrorerror_func = new JuliaFunction<>{
     },
     nullptr,
 };
+static const auto jlgetbindingvalue_func = new JuliaFunction<>{
+    XSTR(jl_get_binding_value),
+    [](LLVMContext &C) {
+        auto T_prjlvalue = JuliaType::get_prjlvalue_ty(C);
+        return FunctionType::get(T_prjlvalue,
+                {T_prjlvalue}, false);
+    },
+    nullptr,
+};
 static const auto jlboundp_func = new JuliaFunction<>{
     XSTR(jl_boundp),
     [](LLVMContext &C) {
@@ -2887,7 +2896,8 @@ static void show_source_loc(jl_codectx_t &ctx, JL_STREAM *out)
 static void cg_bdw(jl_codectx_t &ctx, jl_sym_t *var, jl_binding_t *b)
 {
     jl_binding_deprecation_warning(ctx.module, var, b);
-    if (b->deprecated == 1 && jl_options.depwarn) {
+    jl_binding_partition_t *bpart = jl_get_binding_partition(b, ctx.max_world);
+    if (bpart->deprecated == 1 && jl_options.depwarn) {
         show_source_loc(ctx, JL_STDERR);
         jl_printf(JL_STDERR, "\n");
     }
@@ -2946,10 +2956,11 @@ static jl_value_t *static_eval(jl_codectx_t &ctx, jl_value_t *ex)
     if (jl_is_globalref(ex)) {
         s = jl_globalref_name(ex);
         jl_binding_t *b = jl_get_binding(jl_globalref_mod(ex), s);
-        if (b && b->constp) {
-            if (b->deprecated)
+        jl_binding_partition_t *bpart = jl_get_binding_partition(b, ctx.max_world);
+        if (bpart && bpart->constp) {
+            if (bpart->deprecated)
                 cg_bdw(ctx, s, b);
-            return jl_atomic_load_relaxed(&b->value);
+            return jl_get_value_if_const(bpart);
         }
         return NULL;
     }
@@ -2968,10 +2979,11 @@ static jl_value_t *static_eval(jl_codectx_t &ctx, jl_value_t *ex)
                     s = (jl_sym_t*)static_eval(ctx, jl_exprarg(e, 2));
                     if (s && jl_is_symbol(s)) {
                         jl_binding_t *b = jl_get_binding(m, s);
-                        if (b && b->constp) {
-                            if (b->deprecated)
+                        jl_binding_partition_t *bpart = jl_get_binding_partition(b, ctx.max_world);
+                        if (bpart && bpart->constp) {
+                            if (bpart->deprecated)
                                 cg_bdw(ctx, s, b);
-                            return jl_atomic_load_relaxed(&b->value);
+                            return jl_get_value_if_const(bpart);
                         }
                     }
                 }
@@ -3212,14 +3224,20 @@ static jl_cgval_t emit_globalref(jl_codectx_t &ctx, jl_module_t *mod, jl_sym_t *
     Value *bp = global_binding_pointer(ctx, mod, name, &bnd, false, false);
     if (bp == NULL)
         return jl_cgval_t();
-    bp = julia_binding_pvalue(ctx, bp);
     jl_value_t *ty = nullptr;
     if (bnd) {
-        jl_value_t *v = jl_atomic_load_acquire(&bnd->value); // acquire value for ty
-        if (v != NULL && bnd->constp)
-            return mark_julia_const(ctx, v);
-        ty = jl_atomic_load_relaxed(&bnd->ty);
+        jl_binding_partition_t *bpart = jl_get_binding_partition(bnd, ctx.max_world);
+        if (bpart) {
+            jl_value_t *constval = jl_get_value_if_const(bpart);
+            if (constval) {
+                return mark_julia_const(ctx, constval);
+            }
+            // ty = bpart->restriction;
+        }
+    } else {
+        return mark_julia_type(ctx, ctx.builder.CreateCall(prepare_call(jlgetbindingvalue_func), { bp }), true, jl_any_type);
     }
+    bp = julia_binding_pvalue(ctx, bp);
     if (ty == nullptr)
         ty = (jl_value_t*)jl_any_type;
     return update_julia_type(ctx, emit_checked_var(ctx, bp, name, (jl_value_t*)mod, false, ctx.tbaa().tbaa_binding), ty);
@@ -3234,8 +3252,9 @@ static jl_cgval_t emit_globalop(jl_codectx_t &ctx, jl_module_t *mod, jl_sym_t *s
     Value *bp = global_binding_pointer(ctx, mod, sym, &bnd, true, alloc);
     if (bp == NULL)
         return jl_cgval_t();
-    if (bnd && !bnd->constp) {
-        jl_value_t *ty = jl_atomic_load_relaxed(&bnd->ty);
+    jl_binding_partition_t *bpart = jl_get_binding_partition(bnd, ctx.max_world);
+    if (bpart && !bpart->constp) {
+        jl_value_t *ty = bpart->restriction;
         if (ty != nullptr) {
             const std::string fname = issetglobal ? "setglobal!" : isreplaceglobal ? "replaceglobal!" : isswapglobal ? "swapglobal!" : ismodifyglobal ? "modifyglobal!" : "setglobalonce!";
             if (!ismodifyglobal) {
@@ -3246,7 +3265,7 @@ static jl_cgval_t emit_globalop(jl_codectx_t &ctx, jl_module_t *mod, jl_sym_t *s
                     return jl_cgval_t();
             }
             bool isboxed = true;
-            bool maybe_null = jl_atomic_load_relaxed(&bnd->value) == NULL;
+            bool maybe_null = true;
             return typed_store(ctx,
                                julia_binding_pvalue(ctx, bp),
                                rval, cmp, ty,
@@ -5471,16 +5490,16 @@ static Value *global_binding_pointer(jl_codectx_t &ctx, jl_module_t *m, jl_sym_t
                                      jl_binding_t **pbnd, bool assign, bool alloc)
 {
     jl_binding_t *b = jl_get_module_binding(m, s, 1);
+    jl_binding_partition_t *bpart = jl_get_binding_partition(b, ctx.max_world);
     if (assign) {
-        if (jl_atomic_load_relaxed(&b->owner) == NULL)
+        if (bpart->imported == BINDING_IMPORT_GUARD)
             // not yet declared
             b = NULL;
-    }
-    else {
-        b = jl_atomic_load_relaxed(&b->owner);
-        if (b == NULL)
-            // try to look this up now
+    } else {
+        if (bpart->imported == BINDING_IMPORT_GUARD) {
             b = jl_get_binding(m, s);
+            bpart = jl_get_binding_partition(b, ctx.max_world);
+        }
     }
     if (b == NULL) {
         // var not found. switch to delayed lookup.
@@ -5521,7 +5540,7 @@ static Value *global_binding_pointer(jl_codectx_t &ctx, jl_module_t *m, jl_sym_t
         return p;
     }
     if (assign) {
-        if (jl_atomic_load_relaxed(&b->owner) != b) {
+        if (bpart->imported == BINDING_IMPORT_EXPLICIT || bpart->imported == BINDING_IMPORT_IMPLICIT) {
             // this will fail at runtime, so defer to the runtime to create the error
             ctx.builder.CreateCall(prepare_call(jlgetbindingwrorerror_func),
                     { literal_pointer_val(ctx, (jl_value_t*)m),
@@ -5532,7 +5551,7 @@ static Value *global_binding_pointer(jl_codectx_t &ctx, jl_module_t *m, jl_sym_t
         }
     }
     else {
-        if (b->deprecated)
+        if (bpart->deprecated)
             cg_bdw(ctx, s, b);
     }
     *pbnd = b;
@@ -5640,8 +5659,9 @@ static jl_cgval_t emit_isdefined(jl_codectx_t &ctx, jl_value_t *sym)
             name = (jl_sym_t*)sym;
         }
         jl_binding_t *bnd = jl_get_binding(modu, name);
+        jl_binding_partition_t *bpart = jl_get_binding_partition(bnd, ctx.max_world);
         if (bnd) {
-            if (jl_atomic_load_acquire(&bnd->value) != NULL && bnd->constp)
+            if (jl_get_value_if_const(bpart))
                 return mark_julia_const(ctx, jl_true);
             Value *bp = julia_binding_gv(ctx, bnd);
             bp = julia_binding_pvalue(ctx, bp);
@@ -6487,17 +6507,14 @@ static jl_cgval_t emit_expr(jl_codectx_t &ctx, jl_value_t *expr, ssize_t ssaidx_
             sym = jl_globalref_name(sym);
         }
         if (jl_is_symbol(sym)) {
-            jl_binding_t *bnd = NULL;
-            Value *bp = global_binding_pointer(ctx, mod, sym, &bnd, true, true);
-            if (bp) {
-                if (nargs == 2) {
-                    jl_cgval_t rhs = emit_expr(ctx, args[1]);
-                    ctx.builder.CreateCall(prepare_call(jldeclareconstval_func),
-                            { bp, literal_pointer_val(ctx, (jl_value_t*)mod), literal_pointer_val(ctx, (jl_value_t*)sym), boxed(ctx, rhs) });
-                } else {
-                    ctx.builder.CreateCall(prepare_call(jldeclareconst_func),
-                            { bp, literal_pointer_val(ctx, (jl_value_t*)mod), literal_pointer_val(ctx, (jl_value_t*)sym) });
-                }
+            jl_binding_t *bnd = jl_get_module_binding(mod, sym, 1);
+            if (nargs == 2) {
+                jl_cgval_t rhs = emit_expr(ctx, args[1]);
+                ctx.builder.CreateCall(prepare_call(jldeclareconstval_func),
+                        { literal_pointer_val(ctx, (jl_value_t*)bnd), literal_pointer_val(ctx, (jl_value_t*)mod), literal_pointer_val(ctx, (jl_value_t*)sym), boxed(ctx, rhs) });
+            } else {
+                ctx.builder.CreateCall(prepare_call(jldeclareconst_func),
+                        { literal_pointer_val(ctx, (jl_value_t*)bnd), literal_pointer_val(ctx, (jl_value_t*)mod), literal_pointer_val(ctx, (jl_value_t*)sym) });
             }
         }
     }

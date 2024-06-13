@@ -155,19 +155,20 @@ static jl_value_t *jl_eval_module_expr(jl_module_t *parent_module, jl_expr_t *ex
         }
     }
     else {
-        jl_binding_t *b = jl_get_binding_wr(parent_module, name, 1);
+        jl_binding_t *b = jl_get_module_binding(parent_module, name, 1);
         jl_declare_constant(b, parent_module, name);
+        jl_binding_partition_t *bpart = jl_get_binding_partition(b, jl_current_task->world_age);
         jl_value_t *old = NULL;
-        if (!jl_atomic_cmpswap(&b->value, &old, (jl_value_t*)newm)) {
+        if (!jl_atomic_cmpswap(&bpart->restriction, &old, (jl_value_t*)newm)) {
             if (!jl_is_module(old)) {
                 jl_errorf("invalid redefinition of constant %s", jl_symbol_name(name));
             }
             if (jl_generating_output())
                 jl_errorf("cannot replace module %s during compilation", jl_symbol_name(name));
             jl_printf(JL_STDERR, "WARNING: replacing module %s.\n", jl_symbol_name(name));
-            old = jl_atomic_exchange(&b->value, (jl_value_t*)newm);
+            old = jl_atomic_exchange(&bpart->restriction, (jl_value_t*)newm);
         }
-        jl_gc_wb(b, newm);
+        jl_gc_wb(bpart, newm);
         if (old != NULL) {
             // create a hidden gc root for the old module
             JL_LOCK(&jl_modules_mutex);
@@ -310,14 +311,30 @@ static jl_value_t *jl_eval_dot_expr(jl_module_t *m, jl_value_t *x, jl_value_t *f
 
 void jl_binding_set_type(jl_binding_t *b, jl_value_t *ty, int error)
 {
-    jl_value_t *old_ty = NULL;
-    if (jl_atomic_cmpswap_relaxed(&b->ty, &old_ty, ty)) {
-        jl_gc_wb(b, ty);
+    jl_binding_partition_t *bpart = jl_get_binding_partition(b, jl_current_task->world_age);
+    assert(bpart);
+    if (bpart->imported) {
+        if (bpart->imported == BINDING_IMPORT_GUARD) {
+            bpart->imported = BINDING_IMPORT_NONE;
+            bpart->restriction = ty;
+            jl_gc_wb(bpart, ty);
+            return;
+        } else {
+            jl_errorf("cannot set type for imported global %s.%s.",
+                    jl_symbol_name(jl_globalref_mod(b->globalref)->name), jl_symbol_name(jl_globalref_name(b->globalref)));
+        }
     }
-    else if (error && !jl_types_equal(ty, old_ty)) {
+    if (bpart->constp) {
+        jl_errorf("cannot set type for imported constant %s.%s.",
+                  jl_symbol_name(jl_globalref_mod(b->globalref)->name), jl_symbol_name(jl_globalref_name(b->globalref)));
+    }
+    jl_value_t *old_ty = bpart->restriction;
+    if (!jl_types_equal(ty, old_ty)) {
         jl_errorf("cannot set type for global %s.%s. It already has a value or is already set to a different type.",
                   jl_symbol_name(jl_globalref_mod(b->globalref)->name), jl_symbol_name(jl_globalref_name(b->globalref)));
     }
+    bpart->restriction = ty;
+    jl_gc_wb(bpart, ty);
 }
 
 void jl_declare_global(jl_module_t *m, jl_value_t *arg, jl_value_t *set_type) {
@@ -335,9 +352,11 @@ void jl_declare_global(jl_module_t *m, jl_value_t *arg, jl_value_t *set_type) {
         gs = (jl_sym_t*)arg;
     }
     if (!jl_binding_resolved_p(gm, gs) || set_type) {
-        jl_binding_t *b = jl_get_binding_wr(gm, gs, 1);
         if (set_type) {
+            jl_binding_t *b = jl_get_module_binding(gm, gs, 1);
             jl_binding_set_type(b, set_type, 1);
+        } else {
+            jl_get_binding_wr(gm, gs, 1);
         }
     }
 }
@@ -413,9 +432,7 @@ static void expr_attributes(jl_value_t *v, jl_array_t *body, int *has_ccall, int
             jl_sym_t *name = jl_globalref_name(f);
             if (jl_binding_resolved_p(mod, name)) {
                 jl_binding_t *b = jl_get_binding(mod, name);
-                if (b && b->constp) {
-                    called = jl_atomic_load_relaxed(&b->value);
-                }
+                called = jl_get_value_if_const(jl_get_binding_partition(b, jl_current_task->world_age));
             }
         }
         else if (jl_is_quotenode(f)) {
@@ -646,20 +663,18 @@ static void import_module(jl_module_t *JL_NONNULL m, jl_module_t *import, jl_sym
     jl_sym_t *name = asname ? asname : import->name;
     // TODO: this is a bit race-y with what error message we might print
     jl_binding_t *b = jl_get_module_binding(m, name, 0);
-    jl_binding_t *b2;
-    if (b != NULL && (b2 = jl_atomic_load_relaxed(&b->owner)) != NULL) {
-        if (b2->constp && jl_atomic_load_relaxed(&b2->value) == (jl_value_t*)import)
+    jl_binding_partition_t *bpart = jl_get_binding_partition(b, jl_current_task->world_age);
+    if (b != NULL && bpart->imported) {
+        if (jl_get_value_if_const(bpart) == (jl_value_t*)import)
             return;
-        if (b2 != b)
-            jl_errorf("importing %s into %s conflicts with an existing global",
-                      jl_symbol_name(name), jl_symbol_name(m->name));
+        jl_errorf("importing %s into %s conflicts with an existing global",
+                    jl_symbol_name(name), jl_symbol_name(m->name));
     }
     else {
-        b = jl_get_binding_wr(m, name, 1);
+        b = jl_get_module_binding(m, name, 1);
+        bpart = jl_get_binding_partition(b, jl_current_task->world_age);
+        jl_declare_constant_val(b, m, name, (jl_value_t*)import);
     }
-    jl_declare_constant(b, m, name);
-    jl_checked_assignment(b, m, name, (jl_value_t*)import);
-    b->imported = 1;
 }
 
 // in `import A.B: x, y, ...`, evaluate the `A.B` part if it exists
@@ -723,8 +738,14 @@ static void jl_eval_errorf(jl_module_t *m, const char *filename, int lineno, con
 
 JL_DLLEXPORT void jl_declare_constant_val(jl_binding_t *b, jl_module_t *gm, jl_sym_t *gs, jl_value_t *val)
 {
-    jl_declare_constant(b, gm, gs);
-    jl_checked_assignment(b, gm, gs, val);
+    jl_binding_partition_t *bpart = jl_get_binding_partition(b, jl_current_task->world_age);
+    if (jl_get_value_if_const(bpart) == val) {
+        // Ignore attempts to redefine constants with the same value
+        return;
+    }
+    bpart = jl_declare_constant(b, gm, gs);
+    bpart->restriction = val;
+    jl_gc_wb(bpart, val);
 }
 
 JL_DLLEXPORT void jl_eval_const_decl(jl_module_t *m, jl_value_t *arg, jl_value_t *val)
@@ -740,10 +761,11 @@ JL_DLLEXPORT void jl_eval_const_decl(jl_module_t *m, jl_value_t *arg, jl_value_t
         gm = m;
         gs = (jl_sym_t*)arg;
     }
-    jl_binding_t *b = jl_get_binding_wr(gm, gs, 1);
     if (val) {
+        jl_binding_t *b = jl_get_module_binding(gm, gs, 1);
         jl_declare_constant_val(b, gm, gs, val);
     } else {
+        jl_binding_t *b = jl_get_binding_wr(gm, gs, 1);
         jl_declare_constant(b, gm, gs);
     }
 }
