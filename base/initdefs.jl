@@ -283,8 +283,8 @@ function load_path_expand(env::AbstractString)::Union{String, Nothing}
             if @isdefined(PROGRAM_FILE)
                 dir = dirname(PROGRAM_FILE)
             else
-                cmds = unsafe_load_commands(opts.commands)
-                if any((cmd, arg)->cmd_suppresses_program(cmd), cmds)
+                cmds = unsafe_load_commands(JLOptions().commands)
+                if any(((cmd, arg),)->cmd_suppresses_program(cmd), cmds)
                     # Usage error. The user did not pass a script.
                     return nothing
                 end
